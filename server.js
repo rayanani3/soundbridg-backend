@@ -50,9 +50,21 @@ const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 app.use(express.json());
+// CORS – allow FRONTEND_URL origins (comma-separated) + localhost for dev
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+  .split(',')
+  .map((u) => u.trim().replace(/\/+$/, '')); // strip trailing slashes
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin(origin, callback) {
+      // Allow requests with no origin (health checks, curl, mobile)
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      console.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
