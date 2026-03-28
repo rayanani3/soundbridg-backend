@@ -1,19 +1,40 @@
--- ============================================================
--- SoundBridg Database Schema
--- Run this in the Supabase SQL Editor (Dashboard → SQL Editor)
--- ============================================================
+-- SoundBridg Schema v2 — Run in Supabase SQL Editor
+-- Safe to run multiple times (IF NOT EXISTS everywhere)
 
--- Users table
-CREATE TABLE IF NOT EXISTS users (
+-- Users (original columns preserved)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password_hash') THEN
+    ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='username') THEN
+    ALTER TABLE users ADD COLUMN username TEXT UNIQUE;
+  END IF;
+END $$;
+
+-- Tracks table (replaces separate projects + conversions for the new sync model)
+CREATE TABLE IF NOT EXISTS tracks (
   id UUID PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
-  username TEXT UNIQUE NOT NULL,
-  password TEXT NOT NULL,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  original_file_key TEXT NOT NULL,
+  original_file_size BIGINT NOT NULL DEFAULT 0,
+  format TEXT NOT NULL DEFAULT 'mp3' CHECK (format IN ('mp3', 'wav', 'both')),
+  mp3_file_key TEXT,
+  mp3_file_size BIGINT,
+  wav_file_key TEXT,
+  wav_file_size BIGINT,
+  synced_at TIMESTAMPTZ DEFAULT NOW(),
+  synced_from_device TEXT DEFAULT 'web',
+  shareable_token TEXT UNIQUE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Projects table (uploaded .FLP files)
+CREATE INDEX IF NOT EXISTS idx_tracks_user_id ON tracks(user_id);
+CREATE INDEX IF NOT EXISTS idx_tracks_shareable_token ON tracks(shareable_token);
+CREATE INDEX IF NOT EXISTS idx_tracks_name ON tracks(user_id, name);
+
+-- Keep legacy tables alive (old data still accessible)
 CREATE TABLE IF NOT EXISTS projects (
   id UUID PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -24,7 +45,6 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Conversions table (MP3/WAV outputs)
 CREATE TABLE IF NOT EXISTS conversions (
   id UUID PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -35,25 +55,11 @@ CREATE TABLE IF NOT EXISTS conversions (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Indexes for fast lookups
-CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
-CREATE INDEX IF NOT EXISTS idx_conversions_user_id ON conversions(user_id);
+-- RLS policies for tracks
+ALTER TABLE tracks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY IF NOT EXISTS "tracks_all" ON tracks FOR ALL USING (true) WITH CHECK (true);
 
--- Enable Row Level Security (RLS) — optional but recommended
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE conversions ENABLE ROW LEVEL SECURITY;
+-- Refresh PostgREST schema cache
+NOTIFY pgrst, 'reload schema';
 
--- Allow the service role (used by our backend) full access
--- The anon key cannot read these tables directly from the browser
-CREATE POLICY "Service role full access on users"
-  ON users FOR ALL
-  USING (true) WITH CHECK (true);
-
-CREATE POLICY "Service role full access on projects"
-  ON projects FOR ALL
-  USING (true) WITH CHECK (true);
-
-CREATE POLICY "Service role full access on conversions"
-  ON conversions FOR ALL
-  USING (true) WITH CHECK (true);
+SELECT 'Migration v2 complete — tracks table ready' AS status;
