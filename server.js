@@ -212,7 +212,7 @@ app.post('/api/auth/register', async (req, res) => {
       id,
       email,
       username,
-      password: hashedPassword,
+      password_hash: hashedPassword,
     });
 
     if (insertError) {
@@ -248,7 +248,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const user = users[0];
-    const valid = await bcrypt.compare(password, user.password);
+    const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
