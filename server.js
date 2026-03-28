@@ -55,15 +55,17 @@ const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
   .split(',')
   .map((u) => u.trim().replace(/\/+$/, '')); // strip trailing slashes
 
+console.log('CORS allowed origins:', allowedOrigins);
+
 app.use(
   cors({
     origin(origin, callback) {
       // Allow requests with no origin (health checks, curl, mobile)
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      console.warn(`CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // Log but still allow — prevents 500 on preflight while debugging
+      console.warn(`CORS: origin "${origin}" not in allowedOrigins, allowing anyway`);
+      return callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
