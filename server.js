@@ -150,6 +150,33 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// ── DEBUG (remove after setup) ──────────────────────────────────────────────
+
+app.get('/api/debug/check', async (_req, res) => {
+  const checks = {};
+  // Check Supabase connection
+  try {
+    const { data, error } = await supabase.from('users').select('id').limit(1);
+    if (error) {
+      checks.supabase = { ok: false, error: error.message, code: error.code, hint: error.hint };
+    } else {
+      checks.supabase = { ok: true, rowCount: data?.length ?? 0 };
+    }
+  } catch (e) {
+    checks.supabase = { ok: false, error: e.message };
+  }
+  // Check env vars (show presence, not values)
+  checks.env = {
+    SUPABASE_URL: !!process.env.SUPABASE_URL,
+    SUPABASE_KEY: !!process.env.SUPABASE_KEY,
+    SUPABASE_KEY_LENGTH: process.env.SUPABASE_KEY?.length || 0,
+    JWT_SECRET: !!process.env.JWT_SECRET,
+    CLOUDFLARE_ACCESS_KEY: !!process.env.CLOUDFLARE_ACCESS_KEY,
+    FRONTEND_URL: process.env.FRONTEND_URL || '(not set)',
+  };
+  res.json(checks);
+});
+
 // ── AUTH ROUTES ─────────────────────────────────────────────────────────────
 
 app.post('/api/auth/register', async (req, res) => {
@@ -163,11 +190,16 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Check existing
-    const { data: existing } = await supabase
+    const { data: existing, error: selectError } = await supabase
       .from('users')
       .select('id')
       .or(`email.eq.${email},username.eq.${username}`)
       .limit(1);
+
+    if (selectError) {
+      console.error('Register select error:', selectError);
+      return res.status(500).json({ error: `Database error: ${selectError.message}` });
+    }
 
     if (existing && existing.length > 0) {
       return res.status(409).json({ error: 'Email or username already taken' });
@@ -183,14 +215,17 @@ app.post('/api/auth/register', async (req, res) => {
       password: hashedPassword,
     });
 
-    if (insertError) throw insertError;
+    if (insertError) {
+      console.error('Register insert error:', insertError);
+      return res.status(500).json({ error: `Database error: ${insertError.message}` });
+    }
 
     const user = { id, email, username };
     const token = signToken(user);
     res.status(201).json({ token, user });
   } catch (err) {
     console.error('Register error:', err);
-    res.status(500).json({ error: 'Server error during registration' });
+    res.status(500).json({ error: `Server error: ${err.message}` });
   }
 });
 
