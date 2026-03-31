@@ -14,6 +14,8 @@ import os from 'os';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { promises as fs } from 'fs';
+import { createWriteStream } from 'fs';
+import ffmpeg from 'fluent-ffmpeg';
 
 dotenv.config();
 
@@ -470,6 +472,167 @@ app.delete('/api/tracks/:id', authMiddleware, async (req, res) => {
     res.json({ message: 'Track deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete track' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CONVERT — server-side audio conversion (WAV↔MP3, FLAC→MP3, etc.)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Helper: download R2 file to local temp path
+async function downloadFromR2(r2Key) {
+  const cmd = new GetObjectCommand({ Bucket: R2_BUCKET, Key: r2Key });
+  const response = await r2.send(cmd);
+  const tmpPath = path.join(os.tmpdir(), `sb_dl_${Date.now()}_${path.basename(r2Key)}`);
+  const writeStream = createWriteStream(tmpPath);
+  await new Promise((resolve, reject) => {
+    response.Body.pipe(writeStream);
+    response.Body.on('error', reject);
+    writeStream.on('finish', resolve);
+  });
+  return tmpPath;
+}
+
+// Helper: run ffmpeg conversion
+function convertAudio(inputPath, outputPath, format) {
+  return new Promise((resolve, reject) => {
+    let cmd = ffmpeg(inputPath);
+    if (format === 'mp3') {
+      cmd = cmd.audioCodec('libmp3lame').audioBitrate('192k').format('mp3');
+    } else if (format === 'wav') {
+      cmd = cmd.audioCodec('pcm_s16le').audioFrequency(44100).format('wav');
+    } else {
+      return reject(new Error(`Unsupported output format: ${format}`));
+    }
+    cmd
+      .on('end', () => resolve(outputPath))
+      .on('error', (err) => reject(err))
+      .save(outputPath);
+  });
+}
+
+// POST /api/tracks/:id/convert — convert an existing audio track to another format
+app.post('/api/tracks/:id/convert', authMiddleware, async (req, res) => {
+  const { format } = req.body; // "mp3" or "wav"
+  let tmpInput = null;
+  let tmpOutput = null;
+
+  try {
+    if (!format || !['mp3', 'wav'].includes(format)) {
+      return res.status(400).json({ error: 'Format must be "mp3" or "wav"' });
+    }
+
+    // Fetch source track
+    const { data: tracks, error } = await supabase.from('tracks')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .limit(1);
+    if (error) throw error;
+    if (!tracks?.length) return res.status(404).json({ error: 'Track not found' });
+
+    const source = tracks[0];
+
+    // Can't convert .flp — it's not audio
+    if (source.format === 'flp') {
+      return res.status(400).json({
+        error: 'Cannot convert .flp files — they are FL Studio project files, not audio. Export from FL Studio as WAV or MP3 first, then upload the audio file to convert between formats.'
+      });
+    }
+
+    // Don't convert to same format
+    if (source.format === format) {
+      return res.status(400).json({ error: `Track is already in ${format.toUpperCase()} format` });
+    }
+
+    console.log(`[Convert] ${source.filename} (${source.format}) → ${format}`);
+
+    // Download source from R2
+    tmpInput = await downloadFromR2(source.r2_key);
+
+    // Convert
+    const outputFilename = `${path.parse(source.filename).name}.${format}`;
+    tmpOutput = path.join(os.tmpdir(), `sb_conv_${Date.now()}_${outputFilename}`);
+    await convertAudio(tmpInput, tmpOutput, format);
+
+    // Get file stats
+    const stat = await fs.stat(tmpOutput);
+    const fileBuffer = await fs.readFile(tmpOutput);
+
+    // Get duration from ffprobe
+    const duration = await new Promise((resolve) => {
+      ffmpeg.ffprobe(tmpOutput, (err, metadata) => {
+        if (err) return resolve(source.duration || null);
+        resolve(metadata?.format?.duration || source.duration || null);
+      });
+    });
+
+    // Upload converted file to R2
+    const newTrackId = uuidv4();
+    const syncGroup = source.sync_group || source.title;
+    const r2Key = `${req.user.id}/${newTrackId}-${outputFilename}`;
+    const contentType = format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+
+    // Delete old conversion of same format in this sync group (replace logic)
+    const { data: existing } = await supabase.from('tracks')
+      .select('id, r2_key')
+      .eq('user_id', req.user.id)
+      .eq('sync_group', syncGroup)
+      .eq('format', format);
+
+    if (existing?.length > 0) {
+      for (const old of existing) {
+        console.log(`[Convert] Replacing old ${format} in sync_group "${syncGroup}": ${old.id}`);
+        await deleteFromR2(old.r2_key);
+        await supabase.from('tracks').delete().eq('id', old.id);
+      }
+    }
+
+    await uploadToR2(r2Key, fileBuffer, contentType);
+
+    // Save to DB
+    const record = {
+      id: newTrackId,
+      user_id: req.user.id,
+      title: path.parse(source.filename).name,
+      filename: outputFilename,
+      r2_key: r2Key,
+      size: stat.size,
+      duration: duration ? parseFloat(duration) : null,
+      daw: source.daw,
+      bpm: source.bpm,
+      tags: source.tags,
+      source: 'conversion',
+      shareable_token: null,
+      sync_group: syncGroup,
+      is_original: false,
+      converted_from: source.filename,
+      format,
+    };
+
+    const { error: dbErr } = await supabase.from('tracks').insert(record);
+    if (dbErr) return res.status(500).json({ error: `Database error: ${dbErr.message}` });
+
+    console.log(`[Convert] ✅ ${source.filename} → ${outputFilename} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+
+    res.status(201).json({
+      id: newTrackId,
+      title: record.title,
+      filename: outputFilename,
+      format,
+      size: stat.size,
+      duration: record.duration,
+      sync_group: syncGroup,
+      converted_from: source.filename,
+      created_at: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    console.error('Conversion error:', err);
+    res.status(500).json({ error: `Conversion failed: ${err.message}` });
+  } finally {
+    if (tmpInput) await cleanup(tmpInput);
+    if (tmpOutput) await cleanup(tmpOutput);
   }
 });
 
