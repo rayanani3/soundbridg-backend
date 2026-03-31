@@ -13,6 +13,7 @@ import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { promises as fs } from 'fs';
 
 dotenv.config();
 
@@ -21,7 +22,7 @@ const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const JWT_SECRET = process.env.JWT_SECRET;
 const MAX_FILE_SIZE = 500 * 1024 * 1024;
-const STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB (R2 free tier)
+const STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
 
 // ── Supabase ────────────────────────────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
@@ -58,17 +59,21 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Multer — for scanner uploads (already-converted MP3/WAV files)
+// Multer — accept audio AND .flp files
 const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: MAX_FILE_SIZE },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (['.mp3', '.wav', '.flac', '.m4a'].includes(ext) ||
-        ['audio/mpeg', 'audio/wav', 'audio/flac', 'audio/mp4', 'application/octet-stream'].includes(file.mimetype)) {
+    const allowed = ['.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aiff', '.flp'];
+    const allowedMime = [
+      'audio/mpeg', 'audio/wav', 'audio/flac', 'audio/mp4', 'audio/ogg',
+      'audio/aiff', 'application/octet-stream',
+    ];
+    if (allowed.includes(ext) || allowedMime.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Only audio files are accepted (MP3, WAV, FLAC, M4A)'));
+      cb(new Error(`File type not accepted: ${ext}`));
     }
   },
 });
@@ -103,8 +108,22 @@ async function getSignedDownloadUrl(key, filename) {
   }), { expiresIn: 3600 });
 }
 
-import { promises as fs } from 'fs';
 async function cleanup(p) { try { await fs.unlink(p); } catch {} }
+
+function detectFormat(filename) {
+  const ext = path.extname(filename).toLowerCase().replace('.', '');
+  const map = { flp: 'flp', mp3: 'mp3', wav: 'wav', flac: 'flac', m4a: 'm4a', ogg: 'ogg', aiff: 'aiff' };
+  return map[ext] || 'unknown';
+}
+
+function contentTypeFromExt(ext) {
+  const map = {
+    '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.flac': 'audio/flac',
+    '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.aiff': 'audio/aiff',
+    '.flp': 'application/octet-stream',
+  };
+  return map[ext] || 'application/octet-stream';
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // HEALTH
@@ -115,7 +134,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// AUTH — signup, login, me
+// AUTH — signup, login, register, me
 // ══════════════════════════════════════════════════════════════════════════════
 
 app.post('/api/auth/signup', async (req, res) => {
@@ -141,7 +160,6 @@ app.post('/api/auth/signup', async (req, res) => {
   }
 });
 
-// Also support /register for the web frontend
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, username } = req.body;
@@ -203,12 +221,9 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TRACKS — upload (from scanner or manual), list, stream, download, delete
+// TRACKS — upload with sync_group support (replace-on-upload)
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Upload — called by desktop scanner OR manual web upload
-// Scanner sends: file + title + metadata (daw, bpm, tags, duration)
-// Web sends: file (title derived from filename)
 app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req, res) => {
   const tmpPath = req.file?.path;
   try {
@@ -218,14 +233,35 @@ app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req
     const ext = path.extname(req.file.originalname).toLowerCase() || '.mp3';
     const title = req.body.title || path.parse(req.file.originalname).name;
     const filename = `${title}${ext}`;
+    const format = detectFormat(filename);
     const r2Key = `${req.user.id}/${trackId}-${filename}`;
-    const contentType = ext === '.wav' ? 'audio/wav' : ext === '.flac' ? 'audio/flac' : 'audio/mpeg';
+    const contentType = contentTypeFromExt(ext);
 
-    // Upload to R2
+    // Sync group: use provided value or derive from title
+    const syncGroup = req.body.sync_group || title;
+    const isOriginal = req.body.is_original === 'true' || req.body.is_original === true || format === 'flp';
+    const convertedFrom = req.body.converted_from || null;
+
+    // ── Replace logic: delete old file with same sync_group + format ──
+    const { data: existing } = await supabase.from('tracks')
+      .select('id, r2_key')
+      .eq('user_id', req.user.id)
+      .eq('sync_group', syncGroup)
+      .eq('format', format);
+
+    if (existing?.length > 0) {
+      for (const old of existing) {
+        console.log(`[Replace] Deleting old ${format} for sync_group "${syncGroup}": ${old.id}`);
+        await deleteFromR2(old.r2_key);
+        await supabase.from('tracks').delete().eq('id', old.id);
+      }
+    }
+
+    // ── Upload to R2 ──
     const fileBuffer = await fs.readFile(tmpPath);
     await uploadToR2(r2Key, fileBuffer, contentType);
 
-    // Save metadata to Supabase
+    // ── Save to Supabase ──
     const record = {
       id: trackId,
       user_id: req.user.id,
@@ -237,8 +273,12 @@ app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req
       daw: req.body.daw || 'FL Studio',
       bpm: req.body.bpm ? parseInt(req.body.bpm) : null,
       tags: req.body.tags || null,
-      source: req.body.source || 'web', // 'scanner' or 'web'
+      source: req.body.source || 'web',
       shareable_token: null,
+      sync_group: syncGroup,
+      is_original: isOriginal,
+      converted_from: convertedFrom,
+      format,
     };
 
     const { error: dbErr } = await supabase.from('tracks').insert(record);
@@ -249,6 +289,9 @@ app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req
       title,
       filename,
       size: req.file.size,
+      sync_group: syncGroup,
+      format,
+      is_original: isOriginal,
       created_at: new Date().toISOString(),
     });
   } catch (err) {
@@ -259,19 +302,15 @@ app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req
   }
 });
 
-// List tracks — supports search and sort
+// List tracks — returns all tracks, frontend groups by sync_group
 app.get('/api/tracks', authMiddleware, async (req, res) => {
   try {
     const { sort = 'newest', q, daw, period } = req.query;
     let query = supabase.from('tracks').select('*').eq('user_id', req.user.id);
 
-    // Search by title
     if (q?.trim()) query = query.ilike('title', `%${q.trim()}%`);
-
-    // Filter by DAW
     if (daw && daw !== 'all') query = query.eq('daw', daw);
 
-    // Filter by time period
     if (period === 'week') {
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
       query = query.gte('created_at', weekAgo);
@@ -280,7 +319,6 @@ app.get('/api/tracks', authMiddleware, async (req, res) => {
       query = query.gte('created_at', monthAgo);
     }
 
-    // Sort
     switch (sort) {
       case 'oldest': query = query.order('created_at', { ascending: true }); break;
       case 'a-z':    query = query.order('title', { ascending: true }); break;
@@ -297,13 +335,105 @@ app.get('/api/tracks', authMiddleware, async (req, res) => {
   }
 });
 
+// Get tracks grouped by sync_group
+app.get('/api/tracks/grouped', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Group by sync_group
+    const groups = {};
+    for (const track of (data || [])) {
+      const sg = track.sync_group || track.title;
+      if (!groups[sg]) {
+        groups[sg] = { sync_group: sg, files: [], updated_at: track.created_at };
+      }
+      groups[sg].files.push(track);
+      // Keep newest updated_at
+      if (track.created_at > groups[sg].updated_at) {
+        groups[sg].updated_at = track.created_at;
+      }
+    }
+
+    // Sort groups by newest first
+    const sorted = Object.values(groups).sort((a, b) =>
+      new Date(b.updated_at) - new Date(a.updated_at)
+    );
+
+    res.json(sorted);
+  } catch (err) {
+    console.error('Grouped tracks error:', err);
+    res.status(500).json({ error: 'Failed to fetch grouped tracks' });
+  }
+});
+
+// Get files by sync_group name
+app.get('/api/tracks/by-sync-group/:syncGroup', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .eq('sync_group', req.params.syncGroup)
+      .order('is_original', { ascending: false });
+
+    if (error) throw error;
+    if (!data?.length) return res.status(404).json({ error: 'Sync group not found' });
+
+    // Add signed URLs
+    const files = await Promise.all(data.map(async (t) => ({
+      ...t,
+      stream_url: t.format !== 'flp' ? await getSignedR2Url(t.r2_key) : null,
+      download_url: await getSignedDownloadUrl(t.r2_key, t.filename),
+    })));
+
+    res.json({ sync_group: req.params.syncGroup, files });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch sync group' });
+  }
+});
+
+// Delete entire sync group
+app.delete('/api/sync-group/:syncGroup', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks')
+      .select('id, r2_key')
+      .eq('user_id', req.user.id)
+      .eq('sync_group', req.params.syncGroup);
+
+    if (error) throw error;
+    if (!data?.length) return res.status(404).json({ error: 'Sync group not found' });
+
+    // Delete all files from R2
+    for (const track of data) {
+      await deleteFromR2(track.r2_key);
+    }
+
+    // Delete all DB records
+    await supabase.from('tracks').delete()
+      .eq('user_id', req.user.id)
+      .eq('sync_group', req.params.syncGroup);
+
+    res.json({ message: `Deleted sync group "${req.params.syncGroup}" (${data.length} files)` });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete sync group' });
+  }
+});
+
 // Stream — returns signed URL for audio playback
 app.get('/api/tracks/:id/stream', authMiddleware, async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tracks').select('r2_key, title, filename')
+    const { data, error } = await supabase.from('tracks').select('r2_key, title, filename, format')
       .eq('id', req.params.id).eq('user_id', req.user.id).limit(1);
     if (error) throw error;
     if (!data?.length) return res.status(404).json({ error: 'Track not found' });
+
+    if (data[0].format === 'flp') {
+      return res.status(400).json({ error: 'Cannot stream .flp files — download only' });
+    }
 
     const url = await getSignedR2Url(data[0].r2_key);
     res.json({ stream_url: url });
@@ -312,7 +442,7 @@ app.get('/api/tracks/:id/stream', authMiddleware, async (req, res) => {
   }
 });
 
-// Download — returns signed URL with Content-Disposition: attachment
+// Download
 app.get('/api/tracks/:id/download', authMiddleware, async (req, res) => {
   try {
     const { data, error } = await supabase.from('tracks').select('r2_key, filename')
@@ -327,7 +457,7 @@ app.get('/api/tracks/:id/download', authMiddleware, async (req, res) => {
   }
 });
 
-// Delete track
+// Delete single track
 app.delete('/api/tracks/:id', authMiddleware, async (req, res) => {
   try {
     const { data, error } = await supabase.from('tracks').select('r2_key')
@@ -344,7 +474,7 @@ app.delete('/api/tracks/:id', authMiddleware, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SHARE — generate link, public access
+// SHARE
 // ══════════════════════════════════════════════════════════════════════════════
 
 app.post('/api/tracks/:id/share', authMiddleware, async (req, res) => {
@@ -367,17 +497,16 @@ app.post('/api/tracks/:id/share', authMiddleware, async (req, res) => {
   }
 });
 
-// Public shared track (no auth)
 app.get('/api/shared/:token', async (req, res) => {
   try {
     const { data, error } = await supabase.from('tracks')
-      .select('id, title, filename, r2_key, size, duration, daw, bpm, created_at')
+      .select('id, title, filename, r2_key, size, duration, daw, bpm, format, sync_group, created_at')
       .eq('shareable_token', req.params.token).limit(1);
     if (error) throw error;
     if (!data?.length) return res.status(404).json({ error: 'Track not found' });
 
     const t = data[0];
-    const stream_url = await getSignedR2Url(t.r2_key);
+    const stream_url = t.format !== 'flp' ? await getSignedR2Url(t.r2_key) : null;
     const download_url = await getSignedDownloadUrl(t.r2_key, t.filename);
     res.json({ ...t, r2_key: undefined, stream_url, download_url });
   } catch (err) {
@@ -404,6 +533,24 @@ app.get('/api/storage-info', authMiddleware, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get storage info' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Polling helper — returns latest updated_at for change detection
+// ══════════════════════════════════════════════════════════════════════════════
+
+app.get('/api/tracks/latest-timestamp', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks')
+      .select('created_at')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    res.json({ latest: data?.[0]?.created_at || null, count: 0 });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
   }
 });
 
