@@ -106,6 +106,9 @@ function contentTypeFromExt(ext) {
 // ══════════════════════════════════════════════════════════════════════════════
 // HEALTH
 // ══════════════════════════════════════════════════════════════════════════════
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', message: 'SoundBridg backend is alive' });
+});
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString(), version: '2.0.0' });
 });
