@@ -281,7 +281,7 @@ app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req
 app.get('/api/tracks', authMiddleware, async (req, res) => {
   try {
     const { sort = 'newest', q, daw, period, folder_id, format } = req.query;
-    let query = supabase.from('tracks').select('*').eq('user_id', req.user.id);
+    let query = supabase.from('tracks').select('*').eq('user_id', req.user.id).is('deleted_at', null);
     if (q?.trim()) query = query.ilike('title', `%${q.trim()}%`);
     if (daw && daw !== 'all') query = query.eq('daw', daw);
     if (format && format !== 'all') query = query.eq('format', format);
@@ -305,7 +305,7 @@ app.get('/api/tracks', authMiddleware, async (req, res) => {
 
 app.get('/api/tracks/grouped', authMiddleware, async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tracks').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('tracks').select('*').eq('user_id', req.user.id).is('deleted_at', null).order('created_at', { ascending: false });
     if (error) throw error;
     const groups = {};
     for (const track of (data || [])) {
@@ -316,6 +316,21 @@ app.get('/api/tracks/grouped', authMiddleware, async (req, res) => {
     }
     res.json(Object.values(groups).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
   } catch (err) { res.status(500).json({ error: 'Failed to fetch grouped tracks' }); }
+});
+
+app.get('/api/sync-groups', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks').select('*').eq('user_id', req.user.id).is('deleted_at', null).order('created_at', { ascending: false });
+    if (error) throw error;
+    const groups = {};
+    for (const track of (data || [])) {
+      const sg = track.sync_group || track.title;
+      if (!groups[sg]) groups[sg] = { sync_group: sg, files: [], updated_at: track.created_at };
+      groups[sg].files.push(track);
+      if (track.created_at > groups[sg].updated_at) groups[sg].updated_at = track.created_at;
+    }
+    res.json(Object.values(groups).sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)));
+  } catch (err) { res.status(500).json({ error: 'Failed to fetch sync groups' }); }
 });
 
 app.get('/api/tracks/by-sync-group/:syncGroup', authMiddleware, async (req, res) => {
@@ -372,15 +387,32 @@ app.get('/api/tracks/:id/download', authMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed to get download URL' }); }
 });
 
+app.get('/api/tracks/deleted', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks').select('*').eq('user_id', req.user.id).not('deleted_at', 'is', null).order('deleted_at', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'Failed to fetch deleted tracks' }); }
+});
+
 app.delete('/api/tracks/:id', authMiddleware, async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tracks').select('r2_key').eq('id', req.params.id).eq('user_id', req.user.id).limit(1);
+    const { data, error } = await supabase.from('tracks').select('id').eq('id', req.params.id).eq('user_id', req.user.id).limit(1);
     if (error) throw error;
     if (!data?.length) return res.status(404).json({ error: 'Track not found' });
-    await deleteFromR2(data[0].r2_key);
-    await supabase.from('tracks').delete().eq('id', req.params.id);
-    res.json({ message: 'Track deleted' });
+    await supabase.from('tracks').update({ deleted_at: new Date().toISOString() }).eq('id', req.params.id).eq('user_id', req.user.id);
+    res.json({ message: 'Track moved to trash' });
   } catch (err) { res.status(500).json({ error: 'Failed to delete track' }); }
+});
+
+app.patch('/api/tracks/:id/restore', authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('tracks').select('id').eq('id', req.params.id).eq('user_id', req.user.id).limit(1);
+    if (error) throw error;
+    if (!data?.length) return res.status(404).json({ error: 'Track not found' });
+    await supabase.from('tracks').update({ deleted_at: null }).eq('id', req.params.id).eq('user_id', req.user.id);
+    res.json({ message: 'Track restored' });
+  } catch (err) { res.status(500).json({ error: 'Failed to restore track' }); }
 });
 
 app.patch('/api/tracks/:id/move', authMiddleware, async (req, res) => {
