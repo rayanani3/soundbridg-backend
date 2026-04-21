@@ -24,6 +24,7 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const JWT_SECRET = process.env.JWT_SECRET;
 const MAX_FILE_SIZE = 500 * 1024 * 1024;
 const STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
+const ADMIN_EMAIL = 'rayanani1417@gmail.com';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
@@ -543,6 +544,62 @@ app.get('/api/storage-info', authMiddleware, async (req, res) => {
     const { bytes: used, count } = await getUserStorageUsage(req.user.id);
     res.json({ used_bytes: used, limit_bytes: STORAGE_LIMIT_BYTES, used_pct: Math.round((used / STORAGE_LIMIT_BYTES) * 10000) / 100, track_count: count, warning: used > STORAGE_LIMIT_BYTES * 0.9 });
   } catch (err) { res.status(500).json({ error: 'Failed to get storage info' }); }
+});
+
+app.get('/api/admin/storage-stats', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.email !== ADMIN_EMAIL) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const [usersResult, tracksResult] = await Promise.all([
+      supabase.from('users').select('id, email'),
+      supabase.from('tracks').select('user_id, size'),
+    ]);
+    if (usersResult.error) throw usersResult.error;
+    if (tracksResult.error) throw tracksResult.error;
+
+    const emailById = new Map((usersResult.data || []).map(u => [u.id, u.email]));
+    const usageById = new Map();
+    for (const t of tracksResult.data || []) {
+      if (!t.user_id) continue;
+      usageById.set(t.user_id, (usageById.get(t.user_id) || 0) + (t.size || 0));
+    }
+
+    const totalStorageBytes = Array.from(usageById.values()).reduce((s, b) => s + b, 0);
+    const totalStorageGb = totalStorageBytes / (1024 ** 3);
+    const estimatedMonthlyCostUsd = Math.max(0, totalStorageGb - 10) * 0.015;
+
+    const EIGHT_GB = 8 * 1024 ** 3;
+    let usersOver8Gb = 0, usersOverQuota = 0;
+    for (const bytes of usageById.values()) {
+      if (bytes > EIGHT_GB) usersOver8Gb++;
+      if (bytes > STORAGE_LIMIT_BYTES) usersOverQuota++;
+    }
+
+    const topUsers = Array.from(usageById.entries())
+      .map(([userId, bytes]) => ({
+        email: emailById.get(userId) || '(unknown)',
+        usage_bytes: bytes,
+        usage_gb: Math.round((bytes / (1024 ** 3)) * 100) / 100,
+      }))
+      .sort((a, b) => b.usage_bytes - a.usage_bytes)
+      .slice(0, 10);
+
+    res.json({
+      total_users: usersResult.data?.length || 0,
+      total_storage_bytes: totalStorageBytes,
+      total_storage_gb: Math.round(totalStorageGb * 1000) / 1000,
+      estimated_monthly_cost_usd: Math.round(estimatedMonthlyCostUsd * 100) / 100,
+      users_over_8gb: usersOver8Gb,
+      users_over_quota: usersOverQuota,
+      top_users: topUsers,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Admin stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch storage stats' });
+  }
 });
 
 app.get('/api/storage-plans', (_req, res) => {
