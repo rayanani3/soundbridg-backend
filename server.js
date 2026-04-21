@@ -102,6 +102,20 @@ function detectFormat(filename) {
 function contentTypeFromExt(ext) {
   return { '.mp3':'audio/mpeg', '.wav':'audio/wav', '.flac':'audio/flac', '.m4a':'audio/mp4', '.ogg':'audio/ogg', '.aiff':'audio/aiff', '.flp':'application/octet-stream' }[ext] || 'application/octet-stream';
 }
+async function getUserStorageUsage(userId) {
+  const { data, error } = await supabase.from('tracks').select('size').eq('user_id', userId);
+  if (error) throw error;
+  const bytes = (data || []).reduce((s, t) => s + (t.size || 0), 0);
+  return { bytes, count: data?.length || 0 };
+}
+async function checkStorageQuota(userId, incomingBytes, replacingBytes = 0) {
+  const { bytes: used } = await getUserStorageUsage(userId);
+  const projected = used - replacingBytes + incomingBytes;
+  if (projected > STORAGE_LIMIT_BYTES) {
+    return { ok: false, error: 'Storage limit reached. Upgrade to upload more files.' };
+  }
+  return { ok: true };
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // HEALTH
@@ -251,7 +265,11 @@ app.post('/api/tracks/upload', authMiddleware, upload.single('file'), async (req
     const convertedFrom = req.body.converted_from || null;
     const folderId = req.body.folder_id || null;
 
-    const { data: existing } = await supabase.from('tracks').select('id, r2_key').eq('user_id', req.user.id).eq('sync_group', syncGroup).eq('format', format);
+    const { data: existing } = await supabase.from('tracks').select('id, r2_key, size').eq('user_id', req.user.id).eq('sync_group', syncGroup).eq('format', format);
+    const replacingBytes = (existing || []).reduce((s, t) => s + (t.size || 0), 0);
+    const quota = await checkStorageQuota(req.user.id, req.file.size, replacingBytes);
+    if (!quota.ok) return res.status(413).json({ error: quota.error });
+
     if (existing?.length > 0) {
       for (const old of existing) {
         await deleteFromR2(old.r2_key);
@@ -470,7 +488,10 @@ app.post('/api/tracks/:id/convert', authMiddleware, async (req, res) => {
     const r2Key = `${req.user.id}/${newTrackId}-${outputFilename}`;
     const contentType = format === 'mp3' ? 'audio/mpeg' : 'audio/wav';
 
-    const { data: existing } = await supabase.from('tracks').select('id, r2_key').eq('user_id', req.user.id).eq('sync_group', syncGroup).eq('format', format);
+    const { data: existing } = await supabase.from('tracks').select('id, r2_key, size').eq('user_id', req.user.id).eq('sync_group', syncGroup).eq('format', format);
+    const replacingBytes = (existing || []).reduce((s, t) => s + (t.size || 0), 0);
+    const quota = await checkStorageQuota(req.user.id, stat.size, replacingBytes);
+    if (!quota.ok) return res.status(413).json({ error: quota.error });
     if (existing?.length > 0) { for (const old of existing) { await deleteFromR2(old.r2_key); await supabase.from('tracks').delete().eq('id', old.id); } }
 
     await uploadToR2(r2Key, fileBuffer, contentType);
@@ -519,10 +540,8 @@ app.get('/api/shared/:token', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 app.get('/api/storage-info', authMiddleware, async (req, res) => {
   try {
-    const { data, error } = await supabase.from('tracks').select('size').eq('user_id', req.user.id);
-    if (error) throw error;
-    const used = (data || []).reduce((s, t) => s + (t.size || 0), 0);
-    res.json({ used_bytes: used, limit_bytes: STORAGE_LIMIT_BYTES, used_pct: Math.round((used / STORAGE_LIMIT_BYTES) * 10000) / 100, track_count: data?.length || 0, warning: used > STORAGE_LIMIT_BYTES * 0.9 });
+    const { bytes: used, count } = await getUserStorageUsage(req.user.id);
+    res.json({ used_bytes: used, limit_bytes: STORAGE_LIMIT_BYTES, used_pct: Math.round((used / STORAGE_LIMIT_BYTES) * 10000) / 100, track_count: count, warning: used > STORAGE_LIMIT_BYTES * 0.9 });
   } catch (err) { res.status(500).json({ error: 'Failed to get storage info' }); }
 });
 
