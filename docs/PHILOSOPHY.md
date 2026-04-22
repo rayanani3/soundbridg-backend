@@ -83,7 +83,7 @@ When gold appears, something meaningful just happened. If it appears without mea
 
 ### 3.5 One font, one scale, no exceptions
 - **Font:** Inter, full stop. No serif, no display face, no monospace except for timecode and file paths. All weights are Inter.
-- **Scale:** The exact modular scale is TBD — it will be finalized in the Week 2 design language surgery and locked here when decided. Until then: consistency matters more than the specific values. Don't introduce one-off values to solve layout problems; wait for the scale to be defined.
+- **Scale:** Seven product steps, base 15px, defined in `DESIGN_TOKENS.md` §2. Marketing hero sizes are intentional one-offs at the call site — never tokenized. Half-pixel values (`11.5`, `12.5`, `13.5`) are forbidden.
 - **Weight:** 400 for body, 500 for emphasis, 600 for headings, 700 reserved for the single most important label on a screen. 300 and 800 do not exist in this product.
 - **Line-height:** 1.5 for body, 1.2 for headings. No exceptions.
 

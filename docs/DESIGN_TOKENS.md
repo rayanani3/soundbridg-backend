@@ -1,0 +1,181 @@
+# SoundBridg — Design Tokens
+
+The canonical design-token surface for SoundBridg 2.0. Where `PHILOSOPHY.md` describes *why* the product looks the way it does, this document names the exact values every client must use.
+
+Scope today: **typography** (Week 2 Deliverable #3). A second pass will land **color tokens** here (Week 2 Deliverable #4). Motion, spacing, and radius tokens are deliberately out of scope — those are defined per-surface until a proven need for unification emerges.
+
+Read before any design-language surgery. If a client renders a pixel value not listed here, either the client is drifting or this document is drifting — resolve the conflict before shipping.
+
+---
+
+## 1. Font family
+
+**Product UI (all clients):** Inter, self-hosted. No Google Fonts runtime fetch. No fallbacks that change the shape of glyphs.
+
+```
+font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+```
+
+The system-font fallback exists only for the pre-load frame. Once Inter loads, every glyph in every client is Inter.
+
+**Monospace (timecode, file paths, hashes):** JetBrains Mono, one weight (400), self-hosted.
+
+```
+font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+```
+
+Monospace exists for three purposes only: timecodes (`m:ss`), file paths, and debug identifiers. It is never used for body text, labels, or headings.
+
+**Forbidden families:** DM Sans (current frontend), Outfit (dead Tailwind reference), Segoe UI Display, system stack as primary (current desktop). The audit found all three — all three are drift.
+
+### Self-hosting rule
+
+Inter and JetBrains Mono ship as static assets inside each client repo. Never `@import url('https://fonts.googleapis.com/...')` at runtime. Rationale:
+
+- Offline-first: desktop watcher and mobile app must render correctly with no network.
+- Load determinism: Google Fonts is a third-party dependency that silently fails or slows.
+- Privacy: no third-party font request leaks the user's IP on every session.
+
+Each client is responsible for its own font-loading implementation (web: `@font-face` + `font-display: swap`; Electron: bundled WOFF2 in `renderer/`; RN: `expo-font.useFonts`).
+
+---
+
+## 2. Typography scale
+
+Seven product steps. One base. No display outlier.
+
+| Token              | Value  | rem      | Typical usage                                    |
+| ------------------ | ------ | -------- | ------------------------------------------------ |
+| `--text-xs`        | 11px   | 0.688rem | Metadata, captions, secondary timestamps         |
+| `--text-sm`        | 13px   | 0.813rem | Secondary labels, dense list rows, helper text   |
+| `--text-md`        | 15px   | 0.938rem | **Body. Default paragraph. Most UI labels.**     |
+| `--text-lg`        | 17px   | 1.063rem | Emphasized body, primary list rows, card titles  |
+| `--text-xl`        | 20px   | 1.250rem | Section headings                                 |
+| `--text-2xl`       | 24px   | 1.500rem | Page headings                                    |
+| `--text-3xl`       | 32px   | 2.000rem | Hero on product surfaces (dashboard, empty state)|
+
+Ratios between adjacent steps: ~1.18 at the bottom, widening to ~1.33 at the top. Tight at small sizes to preserve UI density; wider at heading sizes to establish hierarchy. This mirrors the scale SF Pro uses in Apple's own productivity surfaces.
+
+### Why 15px is the base (not 16px)
+
+Most design systems anchor at 16px because most of the web is content — marketing pages, blog posts, documentation. SoundBridg is not content. It is a **dense productivity tool**: a file tray, a waveform list, a sync status. Our nearest visual peers are Linear (14px base), Figma (13px base), and Notion (14–16px variable). We chose 15px as the middle: dense enough that a track list fits the waveforms and metadata comfortably, legible enough that the body copy doesn't feel like fine print.
+
+The rem unit system is non-negotiable specifically because of this choice. When a user raises their OS or browser text size for accessibility, `<html>` scales and every token scales with it — the 15px base becomes 16.5px or 18px in proportion. Anchoring every value in `rem` preserves that contract. Never hard-code px values into the tokens; convert at the usage site only where px is unavoidable (border widths, icon viewBoxes, 1-pixel hairlines).
+
+### Marketing hero sizes — no token
+
+Landing-page and marketing hero sizes (typically 48–80px, often fluid with viewport) are **not tokenized**. Use inline `clamp()` expressions at the usage site, with a local comment explaining the one-off:
+
+```css
+/* Marketing hero — intentional one-off; not in the token scale. */
+font-size: clamp(2.4rem, 5.5vw, 4.2rem);
+```
+
+Rationale: any token named `--text-display` (or similar) will eventually be reached for by product surfaces that want to feel "big." The name itself isn't enforceable — a token exists as a reusable primitive, and reuse is exactly what we want to prevent here. Marketing oversize is an exception; exceptions stay at their call sites where a reviewer can see them.
+
+### Forbidden half-pixels
+
+The frontend currently uses `11.5px`, `12.5px`, and `13.5px` at various call sites. These do not exist in the scale. If a layout needs a size between `--text-sm` (13px) and `--text-md` (15px), the layout is wrong — choose one, not a split.
+
+---
+
+## 3. Weight tokens
+
+Four weights. Nothing else exists in the product.
+
+| Token                 | Value | Usage                                                   |
+| --------------------- | ----- | ------------------------------------------------------- |
+| `--weight-regular`    | 400   | Body text. Every paragraph, every row, every label.     |
+| `--weight-medium`     | 500   | Emphasis inside body. Selected states. Active tabs.     |
+| `--weight-semibold`   | 600   | Headings. Section titles. Card titles.                  |
+| `--weight-bold`       | 700   | **One per screen.** The single most important label.    |
+
+`--weight-bold` is the enforcement mechanism for PHILOSOPHY §3.5's "700 reserved for the single most important label on a screen." If two elements on a screen are 700, one of them is wrong.
+
+**Forbidden weights:** 100, 200, 300, 800, 900. These do not exist in the product. The frontend currently has four `font-extrabold` (800) call sites — all four are drift and will be killed in the frontend surgery.
+
+---
+
+## 4. Line-height tokens
+
+| Token               | Value | Usage                                                   |
+| ------------------- | ----- | ------------------------------------------------------- |
+| `--leading-body`    | 1.5   | Default for anything at `--text-xs` through `--text-lg`.|
+| `--leading-heading` | 1.2   | Default for `--text-xl` and up.                         |
+| `--leading-tight`   | 1.1   | Hero marketing only. Not used on product surfaces.      |
+| `--leading-numeric` | 1.0   | Usage-site override for clocks, counters, timecodes.    |
+
+`--leading-numeric` is an override, not a default. It exists because a timecode like `2:43` looks wrong at 1.5 line-height when stacked in a column — it wants to sit tight. Apply at the specific element, never as a screen-level default.
+
+### Documented local exception
+
+The desktop log view uses `line-height: 1.6` for readability across multi-line log entries. This is a single documented exception — it lives in `soundbridg-desktop/renderer/styles.css` on the log container only, with a comment pointing back to this section. If another surface needs 1.6, it justifies itself here or it doesn't exist.
+
+---
+
+## 5. Per-client migration notes
+
+These notes are the delta from current state to this spec. Each client surgery will reference this list and verify end-to-end.
+
+### 5.1 Web (`soundbridg-frontend/`)
+
+- Replace `tailwind.config.js` `fontFamily.sans` from `['DM Sans', ...]` to `['Inter', ...]`.
+- Remove `fontFamily.display` from any Tailwind reference. `font-display` is used at 6 sites today but not declared — silent fall-through. Kill the class.
+- Remove the `@import url('https://fonts.googleapis.com/css2?family=DM+Sans:...')` line from `src/index.css`. Replace with local `@font-face` declarations pointing at self-hosted Inter WOFF2 files in `public/fonts/`.
+- Remove all four `font-extrabold` call sites (Home.jsx:32, Dashboard.jsx inline 38, Dashboard.jsx:1226 inline, SharedTrack.jsx inline 44). Replace with `font-semibold` (600) or `font-bold` (700) per §3.
+- Introduce the token scale as Tailwind extend values:
+  ```js
+  fontSize: {
+    xs: ['0.688rem', { lineHeight: '1.5' }],
+    sm: ['0.813rem', { lineHeight: '1.5' }],
+    md: ['0.938rem', { lineHeight: '1.5' }],
+    lg: ['1.063rem', { lineHeight: '1.5' }],
+    xl: ['1.250rem', { lineHeight: '1.2' }],
+    '2xl': ['1.500rem', { lineHeight: '1.2' }],
+    '3xl': ['2.000rem', { lineHeight: '1.2' }],
+  }
+  ```
+- Sweep all 19 distinct px font-size values found in the audit; each must collapse to one of the seven tokens. Half-pixel values (`11.5`, `12.5`, `13.5`) are forbidden.
+- Marketing hero `clamp()` at Home.jsx:33 stays as an inline one-off; add the local `/* Marketing hero — not tokenized */` comment.
+
+### 5.2 Desktop (`soundbridg-desktop/`)
+
+- Replace `renderer/styles.css` font stack from system (`-apple-system, BlinkMacSystemFont, 'SF Pro Text', ...`) to `'Inter', -apple-system, ...`. Bundle Inter WOFF2 in `renderer/fonts/` and declare with `@font-face`.
+- Sweep the nine distinct px sizes (11, 12, 13, 14, 15, 18, 28, 32, 48) and collapse to tokens: `12`→`--text-xs` adjustment, `14`→`--text-sm`, `18`→`--text-lg`, `28`→`--text-2xl`, `48`→marketing one-off if on the about/welcome splash. Every surviving value must match a token.
+- Introduce `--weight-medium` (500) usage. Desktop currently uses only 600 and 700 — this misses the emphasis-inside-body expression and produces a heavier visual than intended.
+- The log container keeps `line-height: 1.6` as the documented exception (§4).
+
+### 5.3 Mobile (`Built-Apps/soundbridg-mobile/`)
+
+- Fix the lie in `lib/theme.ts`: the docstring claims "shared with web + desktop" but the file is imported nowhere outside mobile. Either delete the claim or actually share it via a published package (out of scope for this deliverable).
+- Update `font.size` to the token scale:
+  ```ts
+  size: { xs: 11, sm: 13, md: 15, lg: 17, xl: 20, '2xl': 24, '3xl': 32 }
+  ```
+  Note: RN uses unitless numbers (logical pixels, scaled by `PixelRatio`), not `rem`. The accessibility story here is covered by RN's `allowFontScaling` (default true) + `Dynamic Type` on iOS.
+- Add `expo-font.useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold })` at the app root. `expo-font` is already a dep (`~55.0.6`) but never called — the app is currently shipping system font.
+- Add `fontFamily: 'Inter_400Regular'` (etc.) to the theme and apply at every `<Text>` usage site. RN does not inherit `fontFamily` from parent — this is tedious but required.
+- Weight token values in RN are strings (`'400'`, `'500'`, `'600'`, `'700'`), matching what `theme.ts` already has.
+
+---
+
+## 6. Enforcement
+
+These tokens are normative for SoundBridg 2.0. A PR that introduces a font-size, weight, or line-height value not in this document is drift and must be rejected in review.
+
+Per-client enforcement tooling (lint rule, Tailwind preset, RN theme guard) is a future task, not part of this deliverable. Until tooling lands, enforcement is the reviewer's job.
+
+PHILOSOPHY.md §3.5 is the normative rule; this document is the canonical value table it points at. If the two disagree, PHILOSOPHY wins and this document is updated to match.
+
+---
+
+## 7. Revision rules
+
+This document is a **living spec, not a changelog**. When values change:
+
+- Update the token table in-place. Do not add "deprecated" rows or strikethroughs.
+- The git history is the changelog. Commit messages explain *why* a value changed.
+- Changes to the scale, weight vocabulary, or line-height rules require a PHILOSOPHY.md §3.5 edit in the same commit. The two files never drift.
+- Changes to the font family itself require a philosophy-level discussion, not a token edit. Adding a typeface is a brand decision.
+
+When color tokens land (Week 2 Deliverable #4), they append as §8+ in this file. Do not split into a separate `COLORS.md` — one token surface, one file.
