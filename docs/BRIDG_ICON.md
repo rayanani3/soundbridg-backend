@@ -27,9 +27,9 @@ The canonical geometry. Every client copy must match these values exactly.
 ```svg
 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none"
      stroke-linecap="round" stroke-linejoin="round">
-  <path d="M9 18V6l12-2v12" stroke="var(--gold)" stroke-width="2"/>
-  <circle cx="6" cy="18" r="3" stroke="var(--gold)" stroke-width="2"/>
-  <circle cx="18" cy="16" r="3" stroke="var(--gold)" stroke-width="2"/>
+  <path d="M9 18V6l12-2v12" stroke="var(--accent-gold)" stroke-width="2"/>
+  <circle cx="6" cy="18" r="3" stroke="var(--accent-gold)" stroke-width="2"/>
+  <circle cx="18" cy="16" r="3" stroke="var(--accent-gold)" stroke-width="2"/>
 </svg>
 ```
 
@@ -44,7 +44,7 @@ The canonical geometry. Every client copy must match these values exactly.
 | Stroke width | `2` |
 | Stroke linecap / linejoin | `round` |
 | Fill | `none` |
-| Default stroke color | `var(--gold)` → `#C9A84C` |
+| Default stroke color | `var(--accent-gold)` → `#C9A84C` |
 
 **Rendering notes:**
 - The mark is **flat**. No drop shadow, no gradient fill, no stroke gradient, no bevel.
@@ -62,11 +62,11 @@ Color tokens referenced here (`--gold`, `--blue-presence`, `--red-error`, `--sur
 
 | # | Name | Stroke | Opacity | Overlay dot | Animation | Real-world trigger |
 |---|------|--------|---------|-------------|-----------|---------------------|
-| 1 | **Dim** | `var(--gold)` (`#C9A84C`) | `0.35` | — | None | No uploads in flight, no recent error, no nearby peer. The resting state. |
-| 2 | **Solid gold** | `var(--gold)` (`#C9A84C`) | `1.00` | — | None | An upload just completed and the queue is empty — held for 1500ms, then falls back to Dim or Nearby. |
-| 3 | **Pulsing gold** | `var(--gold)` (`#C9A84C`) | `1.00` (animated — see below) | — | Pulse, see §3a | At least one upload is in flight (chokidar-queued on desktop, or explicit upload on web). |
-| 4 | **Gold + blue dot** | `var(--gold)` (`#C9A84C`) | `1.00` | See §3b — fill `var(--blue-presence)` = `#1B3A5C` | None | Supabase Realtime presence channel reports at least one peer device online for the same user. Only applies when idle. |
-| 5 | **Gold + red dot** | `var(--gold)` (`#C9A84C`) | `1.00` | See §3b — fill `var(--red-error)` = `#EF4444` | None | Last sync attempt failed (network loss, 4xx/5xx, R2 error). Held for 5000ms or until the icon is clicked (whichever first). |
+| 1 | **Dim** | `var(--accent-gold)` (`#C9A84C`) | `0.35` | — | None | No uploads in flight, no recent error, no nearby peer. The resting state. |
+| 2 | **Solid gold** | `var(--accent-gold)` (`#C9A84C`) | `1.00` | — | None | An upload just completed and the queue is empty — held for 1500ms, then falls back to Dim or Nearby. |
+| 3 | **Pulsing gold** | `var(--accent-gold)` (`#C9A84C`) | `1.00` (animated — see below) | — | Pulse, see §3a | At least one upload is in flight (chokidar-queued on desktop, or explicit upload on web). |
+| 4 | **Gold + blue dot** | `var(--accent-gold)` (`#C9A84C`) | `1.00` | See §3b — fill `var(--blue-presence)` = `#1B3A5C` | None | Supabase Realtime presence channel reports at least one peer device online for the same user. Only applies when idle. |
+| 5 | **Gold + red dot** | `var(--accent-gold)` (`#C9A84C`) | `1.00` | See §3b — fill `var(--state-error)` = `#EF4444` | None | Last sync attempt failed (network loss, 4xx/5xx, R2 error). Held for 5000ms or until the icon is clicked (whichever first). |
 
 ### 3a. Pulse specification (Syncing only)
 
@@ -88,7 +88,7 @@ The dot is anchored to the right pylon top, sitting slightly outside the mark's 
 | `cx` | `21` |
 | `cy` | `3` |
 | `r` | `3` |
-| Fill | `var(--blue-presence)` or `var(--red-error)` |
+| Fill | `var(--blue-presence)` or `var(--state-error)` |
 | Stroke (knockout ring) | `var(--surface-base)` — the surface color the icon sits on |
 | Stroke width | `1.5` |
 | Animation | None — the dot appears instantly on state entry and disappears instantly on exit |
@@ -154,9 +154,9 @@ Each client implements the mark idiomatically for its platform. What must not di
 ### 5a. Web (`soundbridg-frontend/`)
 
 - **Component:** `src/components/BridgIcon.jsx`, signature `<BridgIcon state="dim|solid|syncing|nearby|error" surface="dark|light" size={24} />`.
-- **Rendering:** inline SVG, path and circles emitted from React. Stroke color via CSS variables (`var(--gold)`).
+- **Rendering:** inline SVG, path and circles emitted from React. Stroke color via CSS variables (`var(--accent-gold)`).
 - **Pulse:** CSS `@keyframes bridg-pulse` on the stroke's opacity, applied only when `state === "syncing"`. Matches §3a values exactly (1200ms, ease-in-out, infinite).
-- **Overlay dot:** conditionally rendered `<circle>` with fill `var(--blue-presence)` or `var(--red-error)`; knockout stroke resolves via the `surface` prop.
+- **Overlay dot:** conditionally rendered `<circle>` with fill `var(--blue-presence)` or `var(--state-error)`; knockout stroke resolves via the `surface` prop.
 - **Consumption sites (to be updated in web surgery):**
   - `src/components/Navbar.jsx:29-33` — replace inline SVG with `<BridgIcon state={syncState} surface="dark" size={16} />`.
   - `src/pages/Home.jsx:20-24` — replace inline SVG with `<BridgIcon state="solid" surface="dark" size={20} />` (hero is a marketing surface; always Solid).
@@ -206,7 +206,7 @@ These rules live in PHILOSOPHY.md but are restated here because client implement
 
 ### Gold is earned (PHILOSOPHY §3.4)
 
-- The gold hex (`#C9A84C` / `var(--gold)`) appears on the bridg mark, on success-confirmation copy, on "Synced ✓" / "Copied" micro-feedback, and on the first-run "Connect your studio" CTA. That is the complete list.
+- The gold hex (`#C9A84C` / `var(--accent-gold)`) appears on the bridg mark, on success-confirmation copy, on "Synced ✓" / "Copied" micro-feedback, and on the first-run "Connect your studio" CTA. That is the complete list.
 - Gold on the bridg mark is the identity — it is permitted to be visible even at Dim (at 35% opacity) because the gold *is* the mark. This does not contradict §3.4: the gold here carries identity, not decoration.
 - Do not introduce gold anywhere else in the UI when wiring this component. Button borders, hover states, link underlines, focus rings — none of these become gold because the bridg icon uses gold.
 
