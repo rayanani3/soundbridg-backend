@@ -11,6 +11,7 @@ Companion to `ARCHITECTURE.md` (descriptive) and `PHILOSOPHY.md` (prescriptive i
 - **Custom HS256 JWT. 30-day expiry. No refresh token.** Do not introduce Supabase Auth. Do not introduce OAuth, magic links, or passkeys without a cross-repo migration plan.
 - **Token payload is `{ id, email, username, iat, exp }`.** `req.user.id` is load-bearing in every authenticated handler. Never remove, rename, or retype these fields. Adding new claims is tolerable; renaming the existing three is not.
 - **`JWT_SECRET` is the one signing key.** No per-client secrets, no asymmetric migration, no co-existing signing schemes. Rotating `JWT_SECRET` invalidates every active session — plan accordingly.
+- **Legacy JWT secret is coupled to `JWT_SECRET` under Path A1.** For Supabase Realtime presence (see `PRESENCE_PROTOCOL.md` §5), the Supabase project's legacy JWT secret is intentionally set equal to our `JWT_SECRET`. The two are one key; rotating `JWT_SECRET` requires updating the Supabase project setting in the same operation, or Realtime auth breaks. Migration to Path A2 (asymmetric keys) or Path A3 (Supabase-issued tokens) is tracked future work and will decouple this — until then, treat the two values as a single secret with two homes.
 - **Bearer transport only.** `Authorization: Bearer <token>` header. No cookie-based auth. No tokens in query strings or path segments.
 - **Token storage per client is fixed:**
   - Web: `localStorage.sb_token` / `localStorage.sb_user`.
@@ -22,6 +23,7 @@ Companion to `ARCHITECTURE.md` (descriptive) and `PHILOSOPHY.md` (prescriptive i
 ## 2. Backend is the single gatekeeper
 
 - **No client holds Supabase or R2 credentials, ever.** Not in env files, not in build artifacts, not in debug builds. Any feature that appears to require direct Supabase/R2 access is wrong — route it through a new backend endpoint instead.
+- **Clarification — anon key vs service-role key.** "Credentials" above means the **service-role key** and R2 access keys. Those remain backend-only and are never shipped to clients. The Supabase **anon key** is a different artifact: it is designed to be public, is RLS-gated at the database level, and is permitted in client bundles (web, desktop, mobile) when a feature requires direct Supabase connectivity — for example, Realtime presence per `PRESENCE_PROTOCOL.md`. Shipping the anon key is not a violation of the rule above; shipping the service-role key is.
 - The mobile app's comment in `lib/api.ts` ("The mobile app talks ONLY to this API — there is no direct Supabase / R2 access") is a contract. Extend the same rule to every future client (iPad, watch, plugin, CLI).
 - **Supabase access uses the service-role key server-side only.** Per-user isolation is enforced by `WHERE user_id = req.user.id` in every query. RLS is effectively off — protect it at the application layer.
 - **R2 access is always through presigned URLs minted by the backend.** Presigned URLs have a 1-hour TTL; do not extend. Do not expose permanent public R2 URLs.
