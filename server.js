@@ -75,7 +75,12 @@ const upload = multer({
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function signToken(user) {
-  return jwt.sign({ id: user.id, email: user.email, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
+  // `sub` and `role` are additive claims for Supabase Realtime (Path A1) — see PRESENCE_PROTOCOL.md §5.
+  return jwt.sign(
+    { id: user.id, email: user.email, username: user.username, sub: user.id, role: 'authenticated' },
+    JWT_SECRET,
+    { expiresIn: '30d' }
+  );
 }
 function authMiddleware(req, res, next) {
   const h = req.headers.authorization;
