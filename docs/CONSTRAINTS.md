@@ -98,7 +98,7 @@ Companion to `ARCHITECTURE.md` (descriptive) and `PHILOSOPHY.md` (prescriptive i
 
 These are listed in `ARCHITECTURE.md §8`. Do not "fix" them as drive-by edits — they represent dormant code paths that users depend on or behaviors with documented reasons. Any cleanup is a deliberate surgery with its own test plan:
 
-- `SyncGroups.jsx` calls non-existent endpoints (silent failure).
+- ~~`SyncGroups.jsx` calls non-existent endpoints (silent failure).~~ Resolved by Week 1 Surgery #2 (`soundbridg-frontend` commit `419df75`, dead UI removed).
 - `Dashboard.jsx` folder strings are hardcoded (no `/api/folders` usage yet).
 - Trash UX is stubbed on web despite server support.
 - `/api/auth/signup` and `/api/auth/register` coexist.
@@ -107,7 +107,7 @@ These are listed in `ARCHITECTURE.md §8`. Do not "fix" them as drive-by edits �
 - Mobile `Track.tags: string[]` type drifts from DB `TEXT`; `Track.sync_group_id` drifts from DB `sync_group`.
 - `netlify.toml` exists alongside the active `wrangler.jsonc`.
 - `.env.example` advertises `CLOUDFLARE_R2_PUBLIC_URL` and `FFMPEG_PATH` which the server never reads.
-- `soundbridg-desktop/package.json` references `build/entitlements.mac.plist`, which is currently missing (checkpoint commit `9a240b3`).
+- ~~`soundbridg-desktop/package.json` references `build/entitlements.mac.plist`, which is currently missing (checkpoint commit `9a240b3`).~~ Resolved by Week 1 Surgery #1 (`soundbridg-desktop` commit `67291e7`, entitlements restored).
 
 Any remediation of the above is a scoped task with its own verification, not a side effect of other work.
 
