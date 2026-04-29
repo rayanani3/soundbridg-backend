@@ -337,7 +337,7 @@ All three clients use the **exact same custom-JWT flow**. No client uses Supabas
 | Desktop | `electron-store` (`~/Library/Application Support/soundbridg-config/…`) keys `token`, `userEmail` | `Authorization: Bearer <t>` on axios calls |
 | Mobile | iOS/Android: `expo-secure-store` (Keychain/Keystore); Web build: `AsyncStorage`. Keys `soundbridg.token`, `soundbridg.user` | `Authorization: Bearer <t>` on `apiFetch` |
 
-**Token shape:** HS256 JWT, payload `{ id, email, username, iat, exp }`, signed with `JWT_SECRET`, 30-day expiry. There is no refresh token and no revocation mechanism — if a token leaks, it's valid until expiry.
+**Token shape:** ES256 JWT (P-256), payload `{ id, email, username, sub, role, iat, exp }`, signed with `JWT_PRIVATE_KEY` and a stable `kid` (`JWT_KID`) header, 30-day expiry. The matching public key is registered as a Supabase standby signing key and published in the project's JWKS — Supabase Realtime verifies our tokens via JWKS without holding the private key. There is no refresh token and no revocation mechanism — if a token leaks, it's valid until expiry. (Algorithm switched from HS256 to ES256 in Week 3; see `docs/migrations/2026-04-jwt-hs256-to-es256.md`.)
 
 **401 handling:** mobile installs a global 401 interceptor (`setUnauthorizedHandler` in `lib/api.ts`) that flushes the session. Web and desktop currently do not — a 401 surfaces as a failed fetch and the UI typically shows an empty state.
 

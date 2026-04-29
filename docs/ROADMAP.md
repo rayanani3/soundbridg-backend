@@ -76,6 +76,7 @@ Goal: stand up the per-client real-time + design-token implementations on the mo
 - **Mobile presence subscription** — implement `PRESENCE_PROTOCOL.md` on RN: subscribe to `presence:user:{user_id}`, track on app foreground, untrack on background, render bridg icon Nearby state.
 - **Mobile bridg icon component** — implement the 5-state component per `BRIDG_ICON.md §5b`, wired to presence channel.
 - **Backend JWT payload addition** — small surgery to add `sub` and `role: "authenticated"` claims to all token-issuing endpoints (login/signup), enabling Path A1 Realtime auth.
+- **Backend JWT algorithm migration HS256 → ES256** — generate P-256 keypair, import public half to Supabase as a standby signing key, store private half in Render env (`JWT_PRIVATE_KEY` + `JWT_KID`), switch backend mint+verify from HS256/`JWT_SECRET` to ES256/`JWT_PRIVATE_KEY`. One-time forced re-login for all active sessions. Required to unblock mobile presence wiring (Path A1 was rendered unreachable by Supabase's ECC signing-key migration); see `docs/migrations/2026-04-jwt-hs256-to-es256.md`.
 
 **Why mobile first**: it's the client with the most drift (GitHub-Dark palette, no Inter, no presence wiring at all) and also the client where the widget will live. Building the foundation on mobile means the widget has somewhere to plug in.
 

@@ -21,6 +21,11 @@ dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
+// Path A2: ES256 with Supabase-registered standby signing key.
+// See docs/migrations/2026-04-jwt-hs256-to-es256.md.
+const JWT_PRIVATE_KEY = process.env.JWT_PRIVATE_KEY;
+const JWT_KID = process.env.JWT_KID;
+// Transitional: HS256 verify fallback retained for 24h post-cutover.
 const JWT_SECRET = process.env.JWT_SECRET;
 const MAX_FILE_SIZE = 500 * 1024 * 1024;
 const STORAGE_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
@@ -75,17 +80,17 @@ const upload = multer({
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function signToken(user) {
-  // `sub` and `role` are additive claims for Supabase Realtime (Path A1) — see PRESENCE_PROTOCOL.md §5.
+  // `sub` and `role` are additive claims for Supabase Realtime (Path A2) — see PRESENCE_PROTOCOL.md §5.
   return jwt.sign(
     { id: user.id, email: user.email, username: user.username, sub: user.id, role: 'authenticated' },
-    JWT_SECRET,
-    { expiresIn: '30d' }
+    JWT_PRIVATE_KEY,
+    { algorithm: 'ES256', keyid: JWT_KID, expiresIn: '30d' }
   );
 }
 function authMiddleware(req, res, next) {
   const h = req.headers.authorization;
   if (!h || !h.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing token' });
-  try { req.user = jwt.verify(h.split(' ')[1], JWT_SECRET); next(); }
+  try { req.user = jwt.verify(h.split(' ')[1], JWT_PRIVATE_KEY, { algorithms: ['ES256'] }); next(); }
   catch { return res.status(401).json({ error: 'Token expired or invalid' }); }
 }
 async function uploadToR2(key, body, ct = 'application/octet-stream') {

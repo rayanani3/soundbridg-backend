@@ -101,34 +101,35 @@ Adding a field is additive; renaming or removing one is a `presence_v` bump.
 
 ---
 
-## 5. Auth — Path A1 (legacy HS256)
+## 5. Auth — Path A2 (asymmetric ES256 via JWKS)
 
-Presence rides the same custom JWT the rest of SoundBridg uses. No second auth system, no Supabase Auth, no second token store.
+Presence rides the same custom JWT the rest of SoundBridg uses. No second auth system, no Supabase Auth, no second token store. The signing algorithm is ES256 (P-256) and the public key is published in the Supabase project's JWKS — Supabase Realtime verifies our tokens against JWKS without ever holding our private key.
 
 ### Mechanism
 
-- The Supabase project's **legacy JWT secret** is set equal to our existing `JWT_SECRET`. Supabase validates incoming Realtime connection JWTs against this secret; our backend mints them with the same secret. They are the same key.
-- **JWT payload gains two additive claims** required by Supabase Realtime auth:
+- **Backend signs with ES256.** A P-256 keypair is generated locally, the public half imported into Supabase as a **standby signing key** (so it appears in JWKS but Supabase Auth does not issue with it), the private half stored in Render env as `JWT_PRIVATE_KEY` (PEM). Every issued token carries a `kid` header (`JWT_KID`) that matches the standby key's id, so Realtime knows which JWKS entry to verify against.
+- **`jsonwebtoken` derives the public key from the PKCS#8 private internally for verify** — no separate `JWT_PUBLIC_KEY` env is needed. The auth middleware passes `JWT_PRIVATE_KEY` to `jwt.verify` with `algorithms: ['ES256']`; the lib handles the derivation.
+- **JWT payload retains the two additive claims** required by Supabase Realtime auth (already shipped in commit `b545ac3`):
   - `sub` — the user ID (UUID). Same value as the existing `id` claim. Both ship.
   - `role` — the literal string `"authenticated"`.
-- The existing claims (`id`, `email`, `username`, `iat`, `exp`) are unchanged. Existing consumers — every `req.user.id` reader in `server.js`, every client storing the token, every endpoint validating it — see no difference.
-- This is additive per `CONSTRAINTS.md` §1: claims added, none renamed, none removed.
+- The existing claims (`id`, `email`, `username`, `iat`, `exp`) are unchanged. Every `req.user.id` reader in `server.js`, every client storing the token, every endpoint validating it — sees no semantic difference. The wire format changes (alg, kid header, signature) but the verified payload shape is stable.
+- This remains additive per `CONSTRAINTS.md` §1: algorithm changed, claims preserved.
 
 ### Connection flow
 
-1. Client authenticates against the SoundBridg API as today (`POST /api/auth/login` → `{ token, user }`).
+1. Client authenticates against the SoundBridg API as today (`POST /api/auth/login` → `{ token, user }`). Token is now ES256-signed with our `kid` header.
 2. Client constructs a Supabase client with the project URL and the **anon key**. The anon key is permitted in client bundles (see `CONSTRAINTS.md` §2 — anon is designed to be public, RLS-gated).
-3. Client calls `supabase.realtime.setAuth(jwt)` with the SoundBridg JWT. From this point, Realtime treats the connection as `authenticated` with `auth.uid()` resolving to the JWT's `sub` claim.
+3. Client calls `supabase.realtime.setAuth(jwt)` with the SoundBridg JWT. Realtime fetches JWKS, finds the public key matching the `kid`, validates the signature. From this point, the connection is `authenticated` with `auth.uid()` resolving to the JWT's `sub` claim.
 4. Client subscribes to `presence:user:{user_id}` (private channel) and `track()`s the payload from §4.
 
-The backend is **not** in this path. The backend mints no Realtime-specific token, brokers no Realtime traffic, and does not see presence events.
+The backend is **not** in this path. The backend mints no Realtime-specific token, brokers no Realtime traffic, and does not see presence events. Its only Realtime touchpoint is at deploy time: registering the public key with the project as a standby signing key.
 
-### Why Path A1 and not A2/A3
+### Why Path A2 and not A1/A3
 
-- **Path A2 (asymmetric keys)** — Supabase's recommended modern path; project signs JWTs with its own private key, our backend signs with another. Requires either co-signing or migrating to Supabase-issued tokens. Tracked as future work; not blocking presence v1.
-- **Path A3 (Supabase-issued tokens)** — replace the SoundBridg JWT entirely with Supabase Auth tokens. Violates `CONSTRAINTS.md` §1 ("Custom HS256 JWT. 30-day expiry. No refresh token. Do not introduce Supabase Auth.") without a coordinated cross-repo migration plan. Not for v1.
+- **Path A1 (legacy HS256 = `JWT_SECRET`)** — unreachable. The Supabase project has been migrated to ECC signing keys; its legacy HS256 secret is verify-only and not editable, and the migrated project will not export its secret value. There is no way to make Supabase's legacy HS256 secret equal our `JWT_SECRET`. Even if reached, the legacy secret is on a deprecation track — building presence on it is building on a tombstone.
+- **Path A3 (Supabase-issued tokens)** — replace the SoundBridg JWT entirely with Supabase Auth tokens. Violates `CONSTRAINTS.md` §1 ("Do not introduce Supabase Auth") without a coordinated cross-repo migration plan, and Supabase does not list a generic custom-issuer slot in third-party auth (only Clerk/Firebase/Auth0/Cognito/WorkOS). Not for v1.
 
-A1 is the smallest possible delta — one Supabase project setting, two additive JWT claims, no backend involvement at runtime — that gets RLS-gated presence working without reopening §1.
+A2 is the smallest viable delta on the current platform — one Supabase signing-key import, one backend deploy that swaps mint+verify to ES256, no runtime backend involvement in Realtime — that gets RLS-gated presence working without reopening `CONSTRAINTS.md` §1's no-Supabase-Auth rule. The cost is a one-time forced re-login (existing HS256 tokens fail verification post-cutover); `CONSTRAINTS.md` §1 already documents key-rotation as session-invalidating.
 
 ---
 
@@ -342,7 +343,7 @@ A persistent false positive (>5 minutes) is a bug — escalate to Supabase.
 
 Tracked separately; not designed here.
 
-- **Path A2 / A3 auth migration.** Move off the legacy HS256 secret coupling onto asymmetric keys (A2) or Supabase-issued tokens (A3). A2 is the lower-friction option since it preserves SoundBridg's custom JWT shape. A3 requires reopening `CONSTRAINTS.md` §1.
+- ~~**Path A2 / A3 auth migration.**~~ A2 shipped Week 3 (see `docs/migrations/2026-04-jwt-hs256-to-es256.md`); A3 (Supabase-issued tokens) remains out of scope and would reopen `CONSTRAINTS.md` §1.
 - **Sync-state Broadcast events.** Cross-device upload notifications, conversion notifications, share-mint notifications. Same Realtime infrastructure, different primitive (`broadcast` extension, different RLS policies, different payload shape). Separate document, Week 3+.
 - **`last_active_at` payload field.** Activity granularity for surfaces that need "30s ago" semantics. `presence_v: 2`.
 - **Backend service-role presence consumer.** Server-side subscription so HTTP endpoints can answer "is this user online?" without proxying Realtime to every API caller. Coordinated with whatever feature first needs it.
