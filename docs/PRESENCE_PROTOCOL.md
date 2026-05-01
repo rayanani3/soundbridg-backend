@@ -51,7 +51,7 @@ The single consumer of presence today is the bridg icon's Nearby state (§4 of `
 | Channel name | `presence:user:{user_id}` |
 | Identity | `{user_id}` is the JWT `sub` claim — the canonical Postgres `users.id` UUID |
 | Cardinality | One channel per user; N peers per channel where N = number of currently-tracked installs |
-| Cross-user crossover | None — RLS prohibits subscribing to another user's channel |
+| Cross-user crossover | ~~None — RLS prohibits subscribing to another user's channel.~~ Read open in v1 — any authenticated user may subscribe to any user's presence channel. Write remains owner-only. See `docs/migrations/2026-04-presence-rls-open.md`; v2 will re-tighten reads to a relationship-gated policy. |
 
 A user signed in on desktop, mobile, and web is a single channel with three peer entries. A user with two browsers open and one phone is one channel with three peer entries. The channel is the user; the peers are the installs.
 
@@ -135,17 +135,18 @@ A2 is the smallest viable delta on the current platform — one Supabase signing
 
 ## 6. RLS policies
 
-Presence reads and writes flow through `realtime.messages`. Two RLS policies are required, both gated identically. Apply them via Supabase migration (recommended) or the SQL editor.
+Presence reads and writes flow through `realtime.messages`. Two RLS policies are required: **read is open to any authenticated user (v1)**, **write is owner-only**. Apply them via Supabase migration (recommended) or the SQL editor.
+
+> **v1 ships open; v2 will gate reads on relationship.** Per `docs/migrations/2026-04-presence-rls-open.md`, the SELECT policy was expanded from owner-only to any-authenticated to unblock cross-account presence for the bridg-tap airdrop UX. Privacy debt is acknowledged; v2 introduces a `follows`/`friends` relationship table and re-tightens the SELECT policy to `auth.uid()` can read `presence:user:X` iff a relationship edge exists from `auth.uid()` to `X`. No fixed date — gated on actual user growth.
 
 ```sql
--- Allow a user to read presence events on their own user-scoped channel.
-create policy "presence read own channel"
+-- v1 (open): any authenticated user may read any user's presence channel.
+create policy "presence read any channel"
 on "realtime"."messages"
 for select
 to authenticated
 using (
-  realtime.topic() = 'presence:user:' || (auth.uid())::text
-  and extension = 'presence'
+  extension = 'presence'
 );
 
 -- Allow a user to track presence on their own user-scoped channel.
@@ -161,7 +162,8 @@ with check (
 
 ### Policy semantics
 
-- `realtime.topic()` returns the topic string of the channel the operation targets. The equality clause restricts every operation to the channel namespaced to the JWT's `auth.uid()` — a user can never see or write another user's presence.
+- The SELECT policy gates only on `extension = 'presence'` and `to authenticated` — there is no per-channel topic check. Any signed-in client may subscribe to any user's presence channel. This is the v1 "open/public" model; the v2 plan re-introduces a topic-vs-relationship check (see callout above and `docs/migrations/2026-04-presence-rls-open.md` §4).
+- The INSERT policy retains the equality clause — `realtime.topic() = 'presence:user:' || auth.uid()::text` — so a user can only `track()` against their own channel. Writes are still owner-only; only reads are open.
 - `extension = 'presence'` scopes both policies to Presence-channel traffic specifically. Broadcast and database-change traffic on `realtime.messages` use different `extension` values (`'broadcast'`, `'postgres_changes'`); restricting to `'presence'` here prevents these policies from accidentally covering future Broadcast features that will need their own gating.[^1]
 - `to authenticated` matches the `role` claim added in §5. An unauthenticated socket cannot even attempt these operations.
 
@@ -344,6 +346,7 @@ A persistent false positive (>5 minutes) is a bug — escalate to Supabase.
 Tracked separately; not designed here.
 
 - ~~**Path A2 / A3 auth migration.**~~ A2 shipped Week 3 (see `docs/migrations/2026-04-jwt-hs256-to-es256.md`); A3 (Supabase-issued tokens) remains out of scope and would reopen `CONSTRAINTS.md` §1.
+- **v2 relationship-gated presence reads.** v1 ships open per `docs/migrations/2026-04-presence-rls-open.md` (any authenticated user can read any presence channel). v2 introduces a `follows`/`friends` relationship table and re-tightens the SELECT policy so `auth.uid()` can read `presence:user:X` iff a relationship edge exists from `auth.uid()` to `X`. No fixed date — gated on actual user growth (likely trigger: opening public signup, or user-count crossing the point where probe-by-UUID stops being noise).
 - **Sync-state Broadcast events.** Cross-device upload notifications, conversion notifications, share-mint notifications. Same Realtime infrastructure, different primitive (`broadcast` extension, different RLS policies, different payload shape). Separate document, Week 3+.
 - **`last_active_at` payload field.** Activity granularity for surfaces that need "30s ago" semantics. `presence_v: 2`.
 - **Backend service-role presence consumer.** Server-side subscription so HTTP endpoints can answer "is this user online?" without proxying Realtime to every API caller. Coordinated with whatever feature first needs it.
